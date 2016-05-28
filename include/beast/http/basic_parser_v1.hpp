@@ -126,7 +126,7 @@ enum values
     presented with request or response message.
 */
 template<bool isRequest, class Derived>
-class basic_parser_v1
+class basic_parser_v1 : public detail::parser_base
 {
 private:
     using self = basic_parser_v1;
@@ -134,81 +134,6 @@ private:
 
     static std::uint64_t constexpr no_content_length =
         std::numeric_limits<std::uint64_t>::max();
-
-    enum state : std::uint8_t
-    {
-        s_closed = 1,
-
-        s_req_start,
-        s_req_method_start,
-        s_req_method,
-        s_req_space_before_url,
-        s_req_url_start,
-        s_req_url,
-        s_req_http_start,
-        s_req_http_H,
-        s_req_http_HT,
-        s_req_http_HTT,
-        s_req_http_HTTP,
-        s_req_major_start,
-        s_req_major,
-        s_req_minor_start,
-        s_req_minor,
-        s_req_line_end,
-
-        s_res_start,
-        s_res_H,
-        s_res_HT,
-        s_res_HTT,
-        s_res_HTTP,
-        s_res_major_start,
-        s_res_major,
-        s_res_minor_start,
-        s_res_minor,
-        s_res_status_code_start,
-        s_res_status_code,
-        s_res_status_start,
-        s_res_status,
-        s_res_line_almost_done,
-        s_res_line_done,
-
-        s_header_field_start,
-        s_header_field,
-        s_header_value_start,
-        s_header_value_discard_lWs0,
-        s_header_value_discard_ws0,
-        s_header_value_almost_done0,
-        s_header_value_text_start,
-        s_header_value_discard_lWs,
-        s_header_value_discard_ws,
-        s_header_value_text,
-        s_header_value_almost_done,
-
-        s_headers_almost_done,
-        s_headers_done,
-
-        s_chunk_size_start,
-        s_chunk_size,
-        s_chunk_parameters,
-        s_chunk_size_almost_done,
-
-        // states below do not count towards
-        // the limit on the size of the message
-
-        s_body_identity0,
-        s_body_identity,
-        s_body_identity_eof0,
-        s_body_identity_eof,
-
-        s_chunk_data_start,
-        s_chunk_data,
-        s_chunk_data_almost_done,
-        s_chunk_data_done,
-
-        s_complete,
-        s_restart,
-        s_closed_complete
-    };
 
     enum field_state : std::uint8_t
     {

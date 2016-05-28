@@ -46,3 +46,4 @@ HTTP:
 * Check basic_parser_v1 against rfc7230 for leading message whitespace
 * Fix the order of message constructor parameters:
   body first then headers (since body is constructed with arguments more often)
+* Unit tests for char tables

@@ -5,9 +5,38 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
+/* Based on src/http/ngx_http_parse.c from NGINX copyright Igor Sysoev
+ *
+ * Additional changes are licensed under the same terms as NGINX and
+ * copyright Joyent, Inc. and other Node contributors. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ */
+/*
+   This code is a modified version of nodejs/http-parser, copyright above:
+    https://github.com/nodejs/http-parser
+*/
+
 #ifndef BEAST_HTTP_IMPL_BASIC_PARSER_V1_IPP
 #define BEAST_HTTP_IMPL_BASIC_PARSER_V1_IPP
 
+#include <beast/http/detail/rfc7230.hpp>
 #include <beast/core/buffer_concepts.hpp>
 #include <cassert>
 
@@ -31,8 +60,6 @@ keep_alive() const
     }
     return ! needs_eof();
 }
-
-// Implementation inspired by nodejs/http-parser
 
 template<bool isRequest, class Derived>
 template<class ConstBufferSequence>
@@ -61,18 +88,18 @@ basic_parser_v1<isRequest, Derived>::
 write(boost::asio::const_buffer const& buffer, error_code& ec)
 {
     using beast::http::detail::is_digit;
-    using beast::http::detail::is_token;
+    using beast::http::detail::is_tchar;
     using beast::http::detail::is_text;
     using beast::http::detail::to_field_char;
     using beast::http::detail::to_value_char;
     using beast::http::detail::unhex;
     using boost::asio::buffer_cast;
     using boost::asio::buffer_size;
- 
+
     auto const data = buffer_cast<void const*>(buffer);
     auto const size = buffer_size(buffer);
 
-    if(size == 0 && s_ != s_closed)
+    if(size == 0 && s_ != s_dead)
         return 0;
 
     auto begin =
@@ -86,12 +113,12 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
     auto err = [&](parse_error ev)
     {
         ec = ev;
-        s_ = s_closed;
+        s_ = s_dead;
         return used();
     };
     auto errc = [&]
     {
-        s_ = s_closed;
+        s_ = s_dead;
         return used();
     };
     auto piece = [&]
@@ -118,7 +145,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
     redo:
         switch(s_)
         {
-        case s_closed:
+        case s_dead:
         case s_closed_complete:
             return err(parse_error::connection_closed);
             break;
@@ -131,7 +158,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             goto redo;
 
         case s_req_method_start:
-            if(! is_token(ch))
+            if(! is_tchar(ch))
                 return err(parse_error::bad_method);
             call_on_start(ec);
             if(ec)
@@ -141,7 +168,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             break;
 
         case s_req_method:
-            if(! is_token(ch))
+            if(! is_tchar(ch))
             {
                 if(cb(nullptr))
                     return errc();
@@ -711,7 +738,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
                     case 'c': fs_ = h_matching_connection_close; break;
                     case 'u': fs_ = h_matching_connection_upgrade; break;
                     default:
-                        if(is_token(c))
+                        if(is_tchar(c))
                             fs_ = h_matching_connection_token;
                         else if(ch == ' ' || ch == '\t')
                             { }
@@ -1042,7 +1069,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             if(keep_alive())
                 init(std::integral_constant<bool, isRequest>{});
             else
-                s_ = s_closed;
+                s_ = s_dead;
             goto redo;
         }
     }
@@ -1066,7 +1093,7 @@ write_eof(error_code& ec)
         s_ = s_closed_complete;
         break;
 
-    case s_closed:
+    case s_dead:
     case s_closed_complete:
         break;
 
@@ -1076,14 +1103,14 @@ write_eof(error_code& ec)
         call_on_complete(ec);
         if(ec)
         {
-            s_ = s_closed;
+            s_ = s_dead;
             break;
         }
         s_ = s_closed_complete;
         break;
 
     default:
-        s_ = s_closed;
+        s_ = s_dead;
         ec = parse_error::short_read;
         break;
     }
