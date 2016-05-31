@@ -47,3 +47,10 @@ HTTP:
 * Fix the order of message constructor parameters:
   body first then headers (since body is constructed with arguments more often)
 * Unit tests for char tables
+* Remove status_code() from API when isRequest==true, et. al.
+* Permit sending trailers and parameters in chunk-encoding chunks
+
+Future:
+
+* SOCKS proxy client and server implementations
+

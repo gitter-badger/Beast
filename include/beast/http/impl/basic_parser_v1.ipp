@@ -44,11 +44,18 @@ namespace beast {
 namespace http {
 
 template<bool isRequest, class Derived>
+basic_parser_v1<isRequest, Derived>::
+basic_parser_v1()
+{
+    init();
+}
+
+template<bool isRequest, class Derived>
 bool
 basic_parser_v1<isRequest, Derived>::
 keep_alive() const
 {
-    if(http_major_ > 0 && http_minor_ > 0)
+    if(http_major_ >= 1 && http_minor_ >= 1)
     {
         if(flags_ & parse_flag::connection_close)
             return false;
@@ -154,36 +161,33 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             flags_ = 0;
             cb_ = nullptr;
             content_length_ = no_content_length;
-            s_ = s_req_method_start;
+            s_ = s_req_method0;
             goto redo;
 
-        case s_req_method_start:
+        case s_req_method0:
             if(! is_tchar(ch))
                 return err(parse_error::bad_method);
             call_on_start(ec);
             if(ec)
                 return errc();
-            cb_ = &self::call_on_method;
+            assert(! cb_);
+            cb(&self::call_on_method);
             s_ = s_req_method;
             break;
 
         case s_req_method:
-            if(! is_tchar(ch))
+            if(ch == ' ')
             {
                 if(cb(nullptr))
                     return errc();
-                s_ = s_req_space_before_url;
-                goto redo;
+                s_ = s_req_url0;
+                break;
             }
+            if(! is_tchar(ch))
+                return err(parse_error::bad_method);
             break;
 
-        case s_req_space_before_url:
-            if(ch != ' ')
-                return err(parse_error::bad_request);
-            s_ = s_req_url_start;
-            break;
-
-        case s_req_url_start:
+        case s_req_url0:
         {
             if(ch == ' ')
                 return err(parse_error::bad_uri);
@@ -201,7 +205,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             {
                 if(cb(nullptr))
                     return errc();
-                s_ = s_req_http_start;
+                s_ = s_req_http;
                 break;
             }
             // VFALCO TODO Better checking for valid URL characters
@@ -209,7 +213,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
                 return err(parse_error::bad_uri);
             break;
 
-        case s_req_http_start:
+        case s_req_http:
             if(ch != 'H')
                 return err(parse_error::bad_version);
             s_ = s_req_http_H;
@@ -236,80 +240,56 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
         case s_req_http_HTTP:
             if(ch != '/')
                 return err(parse_error::bad_version);
-            s_ = s_req_major_start;
-            break;
-
-        case s_req_major_start:
-            if(! is_digit(ch))
-                return err(parse_error::bad_version);
-            http_major_ = ch - '0';
             s_ = s_req_major;
             break;
 
         case s_req_major:
-            if(ch == '.')
-            {
-                s_ = s_req_minor_start;
-                break;
-            }
             if(! is_digit(ch))
                 return err(parse_error::bad_version);
-            http_major_ = 10 * http_major_ + ch - '0';
-            if(http_major_ > 999)
-                return err(parse_error::bad_version);
+            http_major_ = ch - '0';
+            s_ = s_req_dot;
             break;
 
-        case s_req_minor_start:
-            if(! is_digit(ch))
+        case s_req_dot:
+            if(ch != '.')
                 return err(parse_error::bad_version);
-            http_minor_ = ch - '0';
             s_ = s_req_minor;
             break;
 
         case s_req_minor:
-            if(ch == '\r')
-            {
-                s_ = s_req_line_end;
-                break;
-            }
             if(! is_digit(ch))
                 return err(parse_error::bad_version);
-            http_minor_ = 10 * http_minor_ + ch - '0';
-            if(http_minor_ > 999)
-                return err(parse_error::bad_version);
+            http_minor_ = ch - '0';
+            s_ = s_req_cr;
             break;
 
-        case s_req_line_end:
+        case s_req_cr:
+            if(ch != '\r')
+                return err(parse_error::bad_version);
+            s_ = s_req_lf;
+            break;
+
+        case s_req_lf:
             if(ch != '\n')
                 return err(parse_error::bad_crlf);
             call_on_request(ec);
             if(ec)
                 return errc();
-            s_ = s_header_field_start;
+            s_ = s_header_name0;
             break;
 
-        //--------------------------------------------
+        //----------------------------------------------------------------------
 
         case s_res_start:
             flags_ = 0;
             cb_ = nullptr;
             content_length_ = no_content_length;
-            switch(ch)
-            {
-            case 'H':
-                call_on_start(ec);
-                if(ec)
-                    return errc();
-                s_ = s_res_H;
-                break;
-            // VFALCO NOTE this allows whitespace at the beginning,
-            //        need to check rfc7230
-            case '\r':
-            case '\n':
-                break;
-            default:
+            if(ch != 'H')
                 return err(parse_error::bad_version);
-            }
+            call_on_start(ec);
+            if(ec)
+                return errc();
+            s_ = s_res_H;
             break;
 
         case s_res_H:
@@ -333,118 +313,88 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
         case s_res_HTTP:
             if(ch != '/')
                 return err(parse_error::bad_version);
-            s_ = s_res_major_start;
-            break;
-
-        case s_res_major_start:
-            if(! is_digit(ch))
-                return err(parse_error::bad_version);
-            http_major_ = ch - '0';
             s_ = s_res_major;
             break;
 
         case s_res_major:
-            if(ch == '.')
-            {
-                s_ = s_res_minor_start;
-                break;
-            }
             if(! is_digit(ch))
                 return err(parse_error::bad_version);
-            http_major_ = 10 * http_major_ + ch - '0';
-            if(http_major_ > 999)
-                return err(parse_error::bad_version);
+            http_major_ = ch - '0';
+            s_ = s_res_dot;
             break;
 
-        case s_res_minor_start:
-            if(! is_digit(ch))
+        case s_res_dot:
+            if(ch != '.')
                 return err(parse_error::bad_version);
-            http_minor_ = ch - '0';
             s_ = s_res_minor;
             break;
 
         case s_res_minor:
-            if(ch == ' ')
-            {
-                s_ = s_res_status_code_start;
-                break;
-            }
             if(! is_digit(ch))
                 return err(parse_error::bad_version);
-            http_minor_ = 10 * http_minor_ + ch - '0';
-            if(http_minor_ > 999)
-                return err(parse_error::bad_version);
+            http_minor_ = ch - '0';
+            s_ = s_res_space_1;
             break;
 
-        case s_res_status_code_start:
+        case s_res_space_1:
+            if(ch != ' ')
+                return err(parse_error::bad_version);
+            s_ = s_res_status0;
+            break;
+
+        case s_res_status0:
             if(! is_digit(ch))
-            {
-                if(ch == ' ')
-                    break;
-                return err(parse_error::bad_status_code);
-            }
+                return err(parse_error::bad_status);
             status_code_ = ch - '0';
-            s_ = s_res_status_code;
+            s_ = s_res_status1;
             break;
 
-        case s_res_status_code:
+        case s_res_status1:
             if(! is_digit(ch))
-            {
-                switch(ch)
-                {
-                case ' ': s_ = s_res_status_start; break;
-                case '\r': s_ = s_res_line_almost_done; break;
-                case '\n': s_ = s_header_field_start; break;
-                default:
-                    return err(parse_error::bad_status_code);
-                }
-                break;
-            }
+                return err(parse_error::bad_status);
             status_code_ = status_code_ * 10 + ch - '0';
-            if(status_code_ > 999)
-                return err(parse_error::bad_status_code);
+            s_ = s_res_status2;
             break;
 
-        case s_res_status_start:
+        case s_res_status2:
+            if(! is_digit(ch))
+                return err(parse_error::bad_status);
+            status_code_ = status_code_ * 10 + ch - '0';
+            s_ = s_res_space_2;
+            break;
+
+        case s_res_space_2:
+            if(ch != ' ')
+                return err(parse_error::bad_status);
+            s_ = s_res_reason0;
+            break;
+
+        case s_res_reason0:
             if(ch == '\r')
             {
-                s_ = s_res_line_almost_done;
-                break;
-            }
-            // VFALCO Is this up to spec?
-            if(ch == '\n')
-            {
-                s_ = s_header_field_start;
+                s_ = s_res_line_lf;
                 break;
             }
             if(! is_text(ch))
-                return err(parse_error::bad_status);
-            if(cb(&self::call_on_reason))
-                return errc();
-            pos_ = 0;
-            s_ = s_res_status;
+                return err(parse_error::bad_reason);
+            assert(! cb_);
+            cb(&self::call_on_reason);
+            s_ = s_res_reason;
             break;
 
-        case s_res_status:
+        case s_res_reason:
             if(ch == '\r')
             {
                 if(cb(nullptr))
                     return errc();
-                s_ = s_res_line_almost_done;
-                break;
-            }
-            if(ch == '\n')
-            {
-                if(cb(nullptr))
-                    return errc();
-                s_ = s_header_field_start;
+                s_ = s_res_line_lf;
                 break;
             }
             if(! is_text(ch))
-                return err(parse_error::bad_status);
+                return err(parse_error::bad_reason);
             break;
 
-        case s_res_line_almost_done:
+        case s_res_line_lf:
             if(ch != '\n')
                 return err(parse_error::bad_crlf);
             s_ = s_res_line_done;
@@ -454,15 +404,12 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             call_on_response(ec);
             if(ec)
                 return errc();
-            s_ = s_header_field_start;
+            s_ = s_header_name0;
             goto redo;
 
-        //--------------------------------------------
+        //----------------------------------------------------------------------
 
-        // message-header = field-name ":" [ field-value ]
-        // field-name     = token
-
-        case s_header_field_start:
+        case s_header_name0:
         {
             if(ch == '\r')
             {
@@ -484,21 +431,23 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             }
             assert(! cb_);
             cb(&self::call_on_field);
-            s_ = s_header_field;
+            s_ = s_header_name;
             break;
         }
 
-        case s_header_field:
+        case s_header_name:
         {
             for(; p != end; ++p)
             {
                 ch = *p;
                 auto c = to_field_char(ch);
-                    if(! c)
-                        break;
+                if(! c)
+                    break;
                 switch(fs_)
                 {
-                case h_general: break;
+                default:
+                case h_general:
+                    break;
                 case h_C:  ++pos_; fs_ = c=='o' ? h_CO : h_general; break;
                 case h_CO: ++pos_; fs_ = c=='n' ? h_CON : h_general; break;
                 case h_CON:
@@ -514,8 +463,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
 
                 case h_matching_connection:
                     ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::connection)-1 ||
-                            c != detail::parser_str::connection[pos_])
+                    if(c != detail::parser_str::connection[pos_])
                         fs_ = h_general;
                     else if(pos_ == sizeof(detail::parser_str::connection)-2)
                         fs_ = h_connection;
@@ -523,8 +471,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
 
                 case h_matching_proxy_connection:
                     ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::proxy_connection)-1 ||
-                            c != detail::parser_str::proxy_connection[pos_])
+                    if(c != detail::parser_str::proxy_connection[pos_])
                         fs_ = h_general;
                     else if(pos_ == sizeof(detail::parser_str::proxy_connection)-2)
                         fs_ = h_connection;
@@ -532,22 +479,19 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
 
                 case h_matching_content_length:
                     ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::content_length)-1 ||
-                            c != detail::parser_str::content_length[pos_])
+                    if(c != detail::parser_str::content_length[pos_])
                         fs_ = h_general;
                     else if(pos_ == sizeof(detail::parser_str::content_length)-2)
                     {
                         if(flags_ & parse_flag::contentlength)
                             return err(parse_error::bad_content_length);
-                        fs_ = h_content_length;
-                        flags_ |= parse_flag::contentlength;
+                        fs_ = h_content_length0;
                     }
                     break;
 
                 case h_matching_transfer_encoding:
                     ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::transfer_encoding)-1 ||
-                            c != detail::parser_str::transfer_encoding[pos_])
+                    if(c != detail::parser_str::transfer_encoding[pos_])
                         fs_ = h_general;
                     else if(pos_ == sizeof(detail::parser_str::transfer_encoding)-2)
                         fs_ = h_transfer_encoding;
@@ -555,21 +499,17 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
 
                 case h_matching_upgrade:
                     ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::upgrade)-1 ||
-                            c != detail::parser_str::upgrade[pos_])
+                    if(c != detail::parser_str::upgrade[pos_])
                         fs_ = h_general;
                     else if(pos_ == sizeof(detail::parser_str::upgrade)-2)
                         fs_ = h_upgrade;
                     break;
 
                 case h_connection:
-                case h_content_length:
+                case h_content_length0:
                 case h_transfer_encoding:
                 case h_upgrade:
-                    // VFALCO Do we allow a space here?
                     fs_ = h_general;
-                    break;
-                default:
                     break;
                 }
             }
@@ -582,111 +522,39 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             {
                 if(cb(nullptr))
                     return errc();
-                s_ = s_header_value_start;
+                s_ = s_header_value0;
                 break;
             }
             return err(parse_error::bad_field);
         }
-
-        // field-value   = *( field-content | LWS )
-        // field-content = *TEXT
-        // LWS           = [CRLF] 1*( SP | HT )
-
-        case s_header_value_start:
-            if(ch == '\r')
-            {
-                s_ = s_header_value_discard_lWs0;
-                break;
-            }
-            if(ch == ' ' || ch == '\t')
-            {
-                s_ = s_header_value_discard_ws0;
-                break;
-            }
-            s_ = s_header_value_text_start;
-            goto redo;
-
-        case s_header_value_discard_ws0:
+    /*
+        header-field   = field-name ":" OWS field-value OWS
+        field-name     = token
+        field-value    = *( field-content / obs-fold )
+        field-content  = field-vchar [ 1*( SP / HTAB ) field-vchar ]
+        field-vchar    = VCHAR / obs-text
+        obs-fold       = CRLF 1*( SP / HTAB ) 
+                       ; obsolete line folding
+    */
+        case s_header_value0:
             if(ch == ' ' || ch == '\t')
                 break;
             if(ch == '\r')
             {
-                s_ = s_header_value_discard_lWs0;
+                s_ = s_header_value0_lf;
                 break;
             }
-            s_ = s_header_value_text_start;
-            goto redo;
-
-        case s_header_value_discard_lWs0:
-            if(ch != '\n')
-                return err(parse_error::bad_crlf);
-            s_ = s_header_value_almost_done0;
-            break;
-
-        case s_header_value_almost_done0:
-            if(ch == ' ' || ch == '\t')
+            if(fs_ == h_content_length0)
             {
-                s_ = s_header_value_discard_ws0;
-                break;
+                content_length_ = 0;
+                flags_ |= parse_flag::contentlength;
             }
-            call_on_value(ec, boost::string_ref{"", 0});
-            if(ec)
-                return errc();
-            s_ = s_header_field_start;
-            goto redo;
+            assert(! cb_);
+            cb(&self::call_on_value);
+            s_ = s_header_value;
+            // fall through
 
-        case s_header_value_text_start:
-        {
-            auto const c = to_value_char(ch);
-            if(! c)
-                return err(parse_error::bad_value);
-            switch(fs_)
-            {
-            case h_upgrade:
-                flags_ |= parse_flag::upgrade;
-                fs_ = h_general;
-                break;
-
-            case h_transfer_encoding:
-                if(c == 'c')
-                    fs_ = h_matching_transfer_encoding_chunked;
-                else
-                    fs_ = h_general;
-                break;
-
-            case h_content_length:
-                if(! is_digit(ch))
-                    return err(parse_error::bad_content_length);
-                content_length_ = ch - '0';
-                break;
-
-            case h_connection:
-                switch(c)
-                {
-                case 'k': fs_ = h_matching_connection_keep_alive; break;
-                case 'c': fs_ = h_matching_connection_close; break;
-                case 'u': fs_ = h_matching_connection_upgrade; break;
-                default:
-                    fs_ = h_matching_connection_token;
-                    break;
-                }
-                break;
-
-            case h_matching_connection_token_start:
-                break;
-
-            default:
-                fs_ = h_general;
-                break;
-            }
-            pos_ = 0;
-            if(cb(&self::call_on_value))
-                return errc();
-            s_ = s_header_value_text;
-            break;
-        }
-
-        case s_header_value_text:
+        case s_header_value:
         {
             for(; p != end; ++p)
             {
@@ -695,7 +563,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
                 {
                     if(cb(nullptr))
                         return errc();
-                    s_ = s_header_value_discard_lWs;
+                    s_ = s_header_value_lf;
                     break;
                 }
                 auto const c = to_value_char(ch);
@@ -704,16 +572,165 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
                 switch(fs_)
                 {
                 case h_general:
+                default:
                     break;
 
                 case h_connection:
-                case h_transfer_encoding:
-                    assert(0);
+                    switch(c)
+                    {
+                    case 'k':
+                        pos_ = 0;
+                        fs_ = h_matching_connection_keep_alive;
+                        break;
+                    case 'c':
+                        pos_ = 0;
+                        fs_ = h_matching_connection_close;
+                        break;
+                    case 'u':
+                        pos_ = 0;
+                        fs_ = h_matching_connection_upgrade;
+                        break;
+                    default:
+                        if(ch == ' ' || ch == '\t' || ch == ',')
+                            break;
+                        if(! is_tchar(ch))
+                            return err(parse_error::bad_value);
+                        fs_ = h_connection_token;
+                        break;
+                    }
+                    break;
+
+                case h_matching_connection_keep_alive:
+                    ++pos_;
+                    if(c != detail::parser_str::keep_alive[pos_])
+                        fs_ = h_connection_token;
+                    else if(pos_ == sizeof(detail::parser_str::keep_alive)- 2)
+                        fs_ = h_connection_keep_alive;
+                    break;
+
+                case h_matching_connection_close:
+                    ++pos_;
+                    if(c != detail::parser_str::close[pos_])
+                        fs_ = h_connection_token;
+                    else if(pos_ == sizeof(detail::parser_str::close)-2)
+                        fs_ = h_connection_close;
+                    break;
+
+                case h_matching_connection_upgrade:
+                    ++pos_;
+                    if(c != detail::parser_str::upgrade[pos_])
+                        fs_ = h_connection_token;
+                    else if(pos_ == sizeof(detail::parser_str::upgrade)-2)
+                        fs_ = h_connection_upgrade;
+                    break;
+
+                case h_connection_close:
+                    if(ch == ',')
+                    {
+                        fs_ = h_connection;
+                        flags_ |= parse_flag::connection_close;
+                    }
+                    else if(ch == ' ' || ch == '\t')
+                        fs_ = h_connection_close_ows;
+                    else if(is_tchar(ch))
+                        fs_ = h_connection_token;
+                    else
+                        return err(parse_error::bad_value);
+                    break;
+
+                case h_connection_close_ows:
+                    if(ch == ',')
+                    {
+                        fs_ = h_connection;
+                        flags_ |= parse_flag::connection_close;
+                        break;
+                    }
+                    if(ch == ' ' || ch == '\t')
+                        break;
+                    return err(parse_error::bad_value);
+
+                case h_connection_keep_alive:
+                    if(ch == ',')
+                    {
+                        fs_ = h_connection;
+                        flags_ |= parse_flag::connection_keep_alive;
+                    }
+                    else if(ch == ' ' || ch == '\t')
+                        fs_ = h_connection_keep_alive_ows;
+                    else if(is_tchar(ch))
+                        fs_ = h_connection_token;
+                    else
+                        return err(parse_error::bad_value);
+                    break;
+
+                case h_connection_keep_alive_ows:
+                    if(ch == ',')
+                    {
+                        fs_ = h_connection;
+                        flags_ |= parse_flag::connection_keep_alive;
+                        break;
+                    }
+                    if(ch == ' ' || ch == '\t')
+                        break;
+                    return err(parse_error::bad_value);
+
+                case h_connection_upgrade:
+                    if(ch == ',')
+                    {
+                        fs_ = h_connection;
+                        flags_ |= parse_flag::connection_upgrade;
+                    }
+                    else if(ch == ' ' || ch == '\t')
+                        fs_ = h_connection_upgrade_ows;
+                    else if(is_tchar(ch))
+                        fs_ = h_connection_token;
+                    else
+                        return err(parse_error::bad_value);
+                    break;
+
+                case h_connection_upgrade_ows:
+                    if(ch == ',')
+                    {
+                        fs_ = h_connection;
+                        flags_ |= parse_flag::connection_upgrade;
+                        break;
+                    }
+                    if(ch == ' ' || ch == '\t')
+                        break;
+                    return err(parse_error::bad_value);
+
+                case h_connection_token:
+                    if(ch == ',')
+                        fs_ = h_connection;
+                    else if(ch == ' ' || ch == '\t')
+                        fs_ = h_connection_token_ows;
+                    else if(! is_tchar(ch))
+                        return err(parse_error::bad_value);
+                    break;
+
+                case h_connection_token_ows:
+                    if(ch == ',')
+                    {
+                        fs_ = h_connection;
+                        break;
+                    }
+                    if(ch == ' ' || ch == '\t')
+                        break;
+                    return err(parse_error::bad_value);
+
+                case h_content_length0:
+                    if(! is_digit(ch))
+                        return err(parse_error::bad_content_length);
+                    content_length_ = ch - '0';
+                    fs_ = h_content_length;
                     break;
 
                 case h_content_length:
                     if(ch == ' ' || ch == '\t')
+                    {
+                        fs_ = h_content_length_ows;
                         break;
+                    }
                     if(! is_digit(ch))
                         return err(parse_error::bad_content_length);
                     if(content_length_ > (no_content_length - 10) / 10)
@@ -722,92 +739,44 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
                         content_length_ * 10 + ch - '0';
                     break;
 
+                case h_content_length_ows:
+                    if(ch != ' ' && ch != '\t')
+                        return err(parse_error::bad_content_length);
+                    break;
+
+                case h_transfer_encoding:
+                    if(c == 'c')
+                    {
+                        pos_ = 0;
+                        fs_ = h_matching_transfer_encoding_chunked;
+                    }
+                    else if(c != ' ' && c != '\t' && c != ',')
+                    {
+                        fs_ = h_matching_transfer_encoding_general;
+                    }
+                    break;
+
                 case h_matching_transfer_encoding_chunked:
                     ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::chunked)-1 ||
-                            c != detail::parser_str::chunked[pos_])
-                        fs_ = h_general;
+                    if(c != detail::parser_str::chunked[pos_])
+                        fs_ = h_matching_transfer_encoding_general;
                     else if(pos_ == sizeof(detail::parser_str::chunked)-2)
                         fs_ = h_transfer_encoding_chunked;
                     break;
 
-                case h_matching_connection_token_start:
-                    switch(c)
-                    {
-                    case 'k': fs_ = h_matching_connection_keep_alive; break;
-                    case 'c': fs_ = h_matching_connection_close; break;
-                    case 'u': fs_ = h_matching_connection_upgrade; break;
-                    default:
-                        if(is_tchar(c))
-                            fs_ = h_matching_connection_token;
-                        else if(ch == ' ' || ch == '\t')
-                            { }
-                        else
-                            fs_ = h_general;
-                        break;
-                    }
-                    break;
-
-                case h_matching_connection_keep_alive:
-                    ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::keep_alive)-1 ||
-                            c != detail::parser_str::keep_alive[pos_])
-                        fs_ = h_matching_connection_token;
-                    else if (pos_ == sizeof(detail::parser_str::keep_alive)- 2)
-                        fs_ = h_connection_keep_alive;
-                    break;
-
-                case h_matching_connection_close:
-                    ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::close)-1 ||
-                            c != detail::parser_str::close[pos_])
-                        fs_ = h_matching_connection_token;
-                    else if(pos_ == sizeof(detail::parser_str::close)-2)
-                        fs_ = h_connection_close;
-                    break;
-
-                case h_matching_connection_upgrade:
-                    ++pos_;
-                    if(pos_ >= sizeof(detail::parser_str::upgrade)-1 ||
-                            c != detail::parser_str::upgrade[pos_])
-                        fs_ = h_matching_connection_token;
-                    else if (pos_ == sizeof(detail::parser_str::upgrade)-2)
-                        fs_ = h_connection_upgrade;
-                    break;
-
-                case h_matching_connection_token:
-                    if(ch == ',')
-                    {
-                        fs_ = h_matching_connection_token_start;
-                        pos_ = 0;
-                    }
+                case h_matching_transfer_encoding_general:
+                    if(c == ',')
+                        fs_ = h_transfer_encoding;
                     break;
 
                 case h_transfer_encoding_chunked:
-                    if(ch != ' ' && ch != '\t')
-                        fs_ = h_general;
+                    if(c != ' ' && c != '\t' && c != ',')
+                        fs_ = h_transfer_encoding;
                     break;
 
-                case h_connection_keep_alive:
-                case h_connection_close:
-                case h_connection_upgrade:
-                    if(ch ==',')
-                    {
-                        if(fs_ == h_connection_keep_alive)
-                            flags_ |= parse_flag::connection_keep_alive;
-                        else if(fs_ == h_connection_close)
-                            flags_ |= parse_flag::connection_close;
-                        else if(fs_ == h_connection_upgrade)
-                            flags_ |= parse_flag::connection_upgrade;
-                        fs_ = h_matching_connection_token_start;
-                        pos_ = 0;
-                    }
-                    else if(ch != ' ' && ch != '\t')
-                    {
-                        fs_ = h_matching_connection_token;
-                    }
-                    break;
-                default:
+                case h_upgrade:
+                    flags_ |= parse_flag::upgrade;
+                    fs_ = h_general;
                     break;
                 }
             }
@@ -816,25 +785,30 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             break;
         }
 
-        case s_header_value_discard_ws:
-            if(ch == ' ' || ch == '\t')
-                break;
-            if(ch == '\r')
-            {
-                s_ = s_header_value_discard_lWs;
-                break;
-            }
-            if(! is_text(ch))
-                return err(parse_error::bad_value);
-            call_on_value(ec, boost::string_ref(" ", 1));
-            if(ec)
-                return errc();
-            if(cb(&self::call_on_value))
-                return errc();
-            s_ = s_header_value_text;
+        case s_header_value0_lf:
+            if(ch != '\n')
+                return err(parse_error::bad_crlf);
+            s_ = s_header_value0_almost_done;
             break;
 
-        case s_header_value_discard_lWs:
+        case s_header_value0_almost_done:
+            if(ch == ' ' || ch == '\t')
+            {
+                s_ = s_header_value0;
+                break;
+            }
+            if(fs_ == h_content_length0)
+                return err(parse_error::bad_content_length);
+            if(fs_ == h_upgrade)
+                flags_ |= parse_flag::upgrade;
+            assert(! cb_);
+            call_on_value(ec, boost::string_ref{"", 0});
+            if(ec)
+                return errc();
+            s_ = s_header_name0;
+            goto redo;
+
+        case s_header_value_lf:
             if(ch != '\n')
                 return err(parse_error::bad_crlf);
             s_ = s_header_value_almost_done;
@@ -843,19 +817,72 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
         case s_header_value_almost_done:
             if(ch == ' ' || ch == '\t')
             {
-                s_ = s_header_value_discard_ws;
+                switch(fs_)
+                {
+                case h_matching_connection_keep_alive:
+                case h_matching_connection_close:
+                case h_matching_connection_upgrade:
+                    fs_ = h_connection_token_ows;
+                    break;
+
+                case h_connection_close:
+                    fs_ = h_connection_close_ows;
+                    break;
+
+                case h_connection_keep_alive:
+                    fs_ = h_connection_keep_alive_ows;
+                    break;
+                
+                case h_connection_upgrade:
+                    fs_ = h_connection_upgrade_ows;
+                    break;
+
+                case h_content_length:
+                    fs_ = h_content_length_ows;
+                    break;
+
+                case h_matching_transfer_encoding_chunked:
+                    fs_ = h_matching_transfer_encoding_general;
+                    break;
+
+                default:
+                    break;
+                }
+                call_on_value(ec, boost::string_ref(" ", 1));
+                s_ = s_header_value_unfold;
                 break;
             }
             switch(fs_)
             {
-            case h_connection_keep_alive: flags_ |= parse_flag::connection_keep_alive; break;
-            case h_connection_close: flags_ |= parse_flag::connection_close; break;
-            case h_transfer_encoding_chunked: flags_ |= parse_flag::chunked; break;
-            case h_connection_upgrade: flags_ |= parse_flag::connection_upgrade; break;
+            case h_connection_keep_alive:
+            case h_connection_keep_alive_ows:
+                flags_ |= parse_flag::connection_keep_alive;
+                break;
+            case h_connection_close:
+            case h_connection_close_ows:
+                flags_ |= parse_flag::connection_close;
+                break;
+
+            case h_connection_upgrade:
+            case h_connection_upgrade_ows:
+                flags_ |= parse_flag::connection_upgrade;
+                break;
+
+            case h_transfer_encoding_chunked:
+            case h_transfer_encoding_chunked_ows:
+                flags_ |= parse_flag::chunked;
+                break;
+
             default:
                 break;
             }
-            s_ = s_header_field_start;
+            s_ = s_header_name0;
+            goto redo;
+
+        case s_header_value_unfold:
+            assert(! cb_);
+            cb(&self::call_on_value);
+            s_ = s_header_value;
             goto redo;
 
         case s_headers_almost_done:
@@ -877,9 +904,14 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
                 return errc();
             switch(maybe_skip)
             {
-            case 0: break;
-            case 2: upgrade_ = true; // fall through
-            case 1: flags_ |= parse_flag::skipbody; break;
+            case 0:
+                break;
+            case 2:
+                upgrade_ = true;
+                // fall through
+            case 1:
+                flags_ |= parse_flag::skipbody;
+                break;
             default:
                 return err(parse_error::bad_on_headers_rv);
             }
@@ -906,12 +938,8 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             }
             else if(flags_ & parse_flag::chunked)
             {
-                s_ = s_chunk_size_start;
+                s_ = s_chunk_size0;
                 break;
-            }
-            else if(content_length_ == 0)
-            {
-                s_ = s_complete;
             }
             else if(content_length_ != no_content_length)
             {
@@ -934,7 +962,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             assert(! cb_);
             cb(&self::call_on_body);
             s_ = s_body_identity;
-            goto redo; // VFALCO fall through?
+            // fall through
 
         case s_body_identity:
         {
@@ -959,13 +987,13 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             assert(! cb_);
             cb(&self::call_on_body);
             s_ = s_body_identity_eof;
-            goto redo; // VFALCO fall through?
+            // fall through
 
         case s_body_identity_eof:
             p = end - 1;
             break;
 
-        case s_chunk_size_start:
+        case s_chunk_size0:
         {
             auto v = unhex(ch);
             if(v == -1)
@@ -974,23 +1002,22 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             s_ = s_chunk_size;
             break;
         }
+
         case s_chunk_size:
         {
             if(ch == '\r')
             {
-                s_ = s_chunk_size_almost_done;
+                s_ = s_chunk_size_lf;
+                break;
+            }
+            if(ch == ';')
+            {
+                s_ = s_chunk_ext_name0;
                 break;
             }
             auto v = unhex(ch);
             if(v == -1)
-            {
-                if(ch == ';' || ch == ' ')
-                {
-                    s_ = s_chunk_parameters;
-                    break;
-                }
                 return err(parse_error::invalid_chunk_size);
-            }
             if(content_length_ > (no_content_length - 16) / 16)
                 return err(parse_error::bad_content_length);
             content_length_ =
@@ -998,29 +1025,54 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             break;
         }
 
-        case s_chunk_parameters:
+        case s_chunk_ext_name0:
+            if(! is_tchar(ch))
+                return err(parse_error::invalid_ext_name);
+            s_ = s_chunk_ext_name;
+            break;
+
+        case s_chunk_ext_name:
             if(ch == '\r')
             {
-                s_ = s_chunk_size_almost_done;
+                s_ = s_chunk_size_lf;
+                break;
+            }
+            if(ch == '=')
+            {
+                s_ = s_chunk_ext_val;
+                break;
+            }
+            if(ch == ';')
+            {
+                s_ = s_chunk_ext_name0;
+                break;
+            }
+            if(! is_tchar(ch))
+                return err(parse_error::invalid_ext_name);
+            break;
+
+        case s_chunk_ext_val:
+            if(ch == '\r')
+            {
+                s_ = s_chunk_size_lf;
                 break;
             }
             break;
 
-        case s_chunk_size_almost_done:
+        case s_chunk_size_lf:
             if(ch != '\n')
                 return err(parse_error::bad_crlf);
-            nread_ = 0;
             if(content_length_ == 0)
             {
                 flags_ |= parse_flag::trailing;
-                s_ = s_header_field_start;
+                s_ = s_header_name0;
                 break;
             }
             //call_chunk_header(ec); if(ec) return errc();
-            s_ = s_chunk_data_start;
+            s_ = s_chunk_data0;
             break;
 
-        case s_chunk_data_start:
+        case s_chunk_data0:
             assert(! cb_);
             cb(&self::call_on_body);
             s_ = s_chunk_data;
@@ -1036,23 +1088,22 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
             content_length_ -= n;
             p += n - 1;
             if(content_length_ == 0)
-                s_ = s_chunk_data_almost_done;
+                s_ = s_chunk_data_cr;
             break;
         }
 
-        case s_chunk_data_almost_done:
+        case s_chunk_data_cr:
             if(ch != '\r')
                 return err(parse_error::bad_crlf);
             if(cb(nullptr))
                 return errc();
-            s_ = s_chunk_data_done;
+            s_ = s_chunk_data_lf;
             break;
 
-        case s_chunk_data_done:
+        case s_chunk_data_lf:
             if(ch != '\n')
                 return err(parse_error::bad_crlf);
-            nread_ = 0;
-            s_ = s_chunk_size_start;
+            s_ = s_chunk_size0;
             break;
 
         case s_complete:
@@ -1067,7 +1118,7 @@ write(boost::asio::const_buffer const& buffer, error_code& ec)
 
         case s_restart:
             if(keep_alive())
-                init(std::integral_constant<bool, isRequest>{});
+                reset();
             else
                 s_ = s_dead;
             goto redo;
@@ -1130,18 +1181,15 @@ basic_parser_v1<isRequest, Derived>::
 needs_eof(std::false_type) const
 {
     // See RFC 2616 section 4.4
-    if (status_code_ / 100 == 1 || // 1xx e.g. Continue
-        status_code_ == 204 ||     // No Content
-        status_code_ == 304 ||     // Not Modified
-        flags_ & parse_flag::skipbody)       // response to a HEAD request
-    {
+    if( status_code_ / 100 == 1 ||      // 1xx e.g. Continue
+        status_code_ == 204 ||          // No Content
+        status_code_ == 304 ||          // Not Modified
+        flags_ & parse_flag::skipbody)  // response to a HEAD request
         return false;
-    }
 
-    if((flags_ & parse_flag::chunked) || content_length_ != no_content_length)
-    {
+    if((flags_ & parse_flag::chunked) ||
+        content_length_ != no_content_length)
         return false;
-    }
 
     return true;
 }
